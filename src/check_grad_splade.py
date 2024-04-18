@@ -10,18 +10,17 @@ class MyTestCase(unittest.TestCase):
         data_size = 32
 
         vocabulary = 20
+        list_lengths = torch.randint(0, length, [batch])
 
-        list_lengths = torch.randint(5, length, [batch])
-
-        mask = torch.zeros(batch, length, dtype=torch.float64)
+        mask = torch.ones(batch, length, dtype=torch.float64)
         for i, l in enumerate(list_lengths):
-            mask[i, l:] = -torch.inf
+            mask[i, l:] = 0
 
         x = torch.randn(batch, length, data_size, requires_grad=True, dtype=torch.float64)
         w = torch.randn(data_size, vocabulary, requires_grad=True, dtype=torch.float64)
         b = torch.randn(vocabulary, requires_grad=True, dtype=torch.float64)
 
-        self.assertEqual(torch.autograd.gradcheck(SpladeModel.apply, (x, w, b, mask), eps=1e-2, atol=0.1, rtol=1e-2), True)  # add assertion here
+        self.assertEqual(torch.autograd.gradcheck(SpladeModel.apply, (x, w, b, mask)), True)  # add assertion here
 
 
 if __name__ == '__main__':

@@ -2,7 +2,7 @@ import torch
 from torch.autograd import Function
 from torch.nn import ReLU
 
-class SpladeModel(Function):
+class ReluMaxLinear(Function):
     @staticmethod
     def forward(x, weight, bias, mask):
         '''
@@ -44,10 +44,6 @@ class SpladeModel(Function):
         x, weight, bias, effective_indice = ctx.saved_tensors
         grad_x = grad_weight = grad_bias = None
 
-        B, L, D = x.shape
-        V = weight.shape[1]
-
-
         if ctx.needs_input_grad[0]:
             # grad_x = torch.zeros_like(x, dtype=torch.float64)
             # for b in range(B):
@@ -57,11 +53,7 @@ class SpladeModel(Function):
             grad_x = torch.zeros_like(x, dtype=torch.float64)
             for tuple_indice in effective_indice:
                 b, v, l_max = tuple_indice
-                # grad_x[b, l_max] += grad_outputs[0][b, v] * weight[:, v]
-                test1 = weight[:, v]
-                test2 = grad_outputs[0][b, v]
-                grad_x[b, l_max] += test1 * test2
-
+                grad_x[b, l_max] += grad_outputs[0][b, v] * weight[:, v]
 
         if ctx.needs_input_grad[1]:
             #########################  version 1  ##################################

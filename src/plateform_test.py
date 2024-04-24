@@ -1,6 +1,6 @@
 import torch
 from torch.nn import ReLU
-from splade_model import SpladeModel
+from relu_max_linear import ReluMaxLinear
 from copy import deepcopy
 
 batch = 32
@@ -24,7 +24,14 @@ for i, l in enumerate(list_lengths):
     mask[i, l:] = 0
 
 
-splade = SpladeModel.apply(x, w, b, mask)
+splade = ReluMaxLinear.apply(x, w, b, mask)
+
+print(max(splade[1][:, 1]))
+print(splade[1][:,0].unique())
+print(splade[1][:,1].unique())
+print(splade[1][:,2].unique())
+
+
 
 splade[0].sum().backward()
 

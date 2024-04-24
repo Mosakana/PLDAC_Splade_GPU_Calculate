@@ -1,6 +1,6 @@
 import unittest
 import torch
-from splade_model import SpladeModel
+from relu_max_linear import ReluMaxLinear
 
 
 class MyTestCase(unittest.TestCase):
@@ -20,7 +20,7 @@ class MyTestCase(unittest.TestCase):
         w = torch.randn(data_size, vocabulary, requires_grad=True, dtype=torch.float64)
         b = torch.randn(vocabulary, requires_grad=True, dtype=torch.float64)
 
-        self.assertEqual(torch.autograd.gradcheck(SpladeModel.apply, (x, w, b, mask)), True)  # add assertion here
+        self.assertEqual(torch.autograd.gradcheck(ReluMaxLinear.apply, (x, w, b, mask)), True)  # add assertion here
 
 
 if __name__ == '__main__':

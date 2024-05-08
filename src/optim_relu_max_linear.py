@@ -1,129 +1,110 @@
 import torch
+import os
+
+os.environ["TRITON_INTERPRET"] = "1"
 from torch.autograd import Function
 from torch.nn import ReLU
 import triton
 import triton.language as tl
+from copy import deepcopy
+
+BLOCK_SIZE_D = 128
+
 
 @triton.jit
 def gradient_w_kernel(index_ptr, grad_ptr, delta_ptr, x_ptr,
-                      stride_grad_dim_d, stride_grad_dim_v,
-                      stride_delta_dim_b, stride_delta_dim_v,
-                      stride_x_dim_b, stride_x_dim_l, stride_x_dim_d,
-                      N_INDEX, D,
-                      BLOCK_SIZE_D: tl.constexpr,
-                      BLOCK_SIZE_INDEX: tl.constexpr,
-                      GROUP_SIZE_INDEX):
+                      D, N_INDEX,
+                      stride_index_dim0, stride_index_dim1,
+                      stride_grad_d, stride_grad_v,
+                      stride_delta_b, stride_delta_v,
+                      stride_x_b, stride_x_l, stride_x_d,
+                      BLOCK_SIZE_D: tl.constexpr):
 
-    ################# L2 cache optimisation ###################
     pid = tl.program_id(axis=0)
-    num_pid_index = tl.cdiv(N_INDEX, BLOCK_SIZE_INDEX)
-    num_pid_d = tl.cdiv(D, BLOCK_SIZE_D)
-    num_pid_in_group = GROUP_SIZE_INDEX * num_pid_d
-    group_id = pid // num_pid_in_group
-    first_pid_index = group_id * GROUP_SIZE_INDEX
-    group_size_index = min(num_pid_index - first_pid_index, GROUP_SIZE_INDEX)
-    pid_index = first_pid_index + (pid % group_size_index)
-    pid_d = (pid % num_pid_in_group) // group_size_index
-    ###########################################################
 
-    offset_index = (pid_index * BLOCK_SIZE_INDEX + tl.arange(0, BLOCK_SIZE_INDEX)) % N_INDEX
-    offset_d = (pid_d * BLOCK_SIZE_D + tl.arange(0, BLOCK_SIZE_D)) % D
+    start_point = pid * BLOCK_SIZE_D
 
-    index_ptrs = index_ptr + offset_index
+    offsets = start_point + tl.arange(0, BLOCK_SIZE_D)
 
-    index = tl.load(index_ptrs, mask=offset_index < N_INDEX)
+    mask = offsets < D
 
-    b, v, lmax = index
-    for test in index:
-        print(test)
+    for i in range(N_INDEX):
+        b = tl.load(index_ptr + (i * stride_index_dim0) + 0 * stride_index_dim1)
+        v = tl.load(index_ptr + (i * stride_index_dim0) + 1 * stride_index_dim1)
+        lmax = tl.load(index_ptr + (i * stride_index_dim0) + 2 * stride_index_dim1)
 
-    grad_ptrs = grad_ptr + (offset_d[:, None] * stride_grad_dim_d + v * stride_grad_dim_v)
-
-    delta_ptr = delta_ptr + (b * stride_delta_dim_b + v * stride_delta_dim_v)
-
-    x_ptrs = x_ptr + (b * stride_x_dim_b + lmax * stride_x_dim_l, offset_d[:, None] * stride_x_dim_d)
-
-    for d in range(0, tl.cdiv(D, BLOCK_SIZE_D)):
-        grad = tl.load(grad_ptrs, mask=offset_d[:, None] < D - d * BLOCK_SIZE_D, other=0.0)
-        delta = tl.load(delta_ptr)
-        x = tl.load(x_ptrs, mask=offset_d[None, None, :] < D - d * BLOCK_SIZE_D, other=0.0)
+        delta = tl.load(delta_ptr + (b[0] * stride_delta_b + v[0] * stride_delta_v))
+        x = tl.load(x_ptr + (b[0] * stride_x_b + lmax[0] * stride_x_l + offsets * stride_x_d), mask=mask)
+        grad = tl.load(grad_ptr + (offsets * stride_grad_d + v[0] * stride_grad_v), mask=mask)
 
         grad += delta * x
-        tl.store(grad_ptrs, grad, mask=offset_d[:, None] < D - d * BLOCK_SIZE_D)
 
-######### forcement y'a des problemes #####################
+        tl.store(grad_ptr + (offsets * stride_grad_d + v[0] * stride_grad_v), grad, mask=mask)
 
-def compute_gradient_w(index, delta, x):
-    N_INDEX = len(index)
+
+def compute_gradient_w(index, delta, x, grad_weight):
+    N_INDEX = index.shape[0]
     D = x.shape[2]
-    V = delta.shape[1]
-    grad_weight = torch.zeros(D, V, dtype=torch.float64)
 
-    grid = lambda meta: (triton.cdiv(N_INDEX, meta['BLOCK_SIZE_INDEX']) * triton.cdiv(D, meta['BLOCK_SIZE_D']), )
-
+    grid = lambda meta: (triton.cdiv(D, meta['BLOCK_SIZE_D']), )
     gradient_w_kernel[grid](index, grad_weight, delta, x,
+                            D, N_INDEX,
+                            index.stride(0), index.stride(1),
                             grad_weight.stride(0), grad_weight.stride(1),
                             delta.stride(0), delta.stride(1),
                             x.stride(0), x.stride(1), x.stride(2),
-                            N_INDEX, D,
-                            BLOCK_SIZE_D=32, BLOCK_SIZE_INDEX=1,
-                            GROUP_SIZE_INDEX=8)
+                            BLOCK_SIZE_D=BLOCK_SIZE_D)
 
-    return grad_weight
+    return grad_weight.clone().detach().requires_grad_(True)
 
-# def gradient_w_kernel(index_ptr, grad_ptr, delta_ptr, x_ptr,
-#                       stride_index_dim_b, stride_index_dim_v,
-#                       stride_grad_dim_d, stride_grad_dim_v,
-#                       stride_delta_dim_b, stride_delta_dim_v,
-#                       stride_x_dim_b, stride_x_dim_l, stride_x_dim_d,
-#                       B, V, D,
-#                       BLOCK_SIZE_B: tl.constexpr,
-#                       BLOCK_SIZE_V: tl.constexpr,
-#                       BLOCK_SIZE_D: tl.constexpr,
-#                       GROUP_SIZE_V: tl.constexpr):
-#
-#     pid = tl.program_id(axis=0)
-#
-#     ################# L2 cache optimisation ###################
-#     num_pid_v = tl.cdiv(V, BLOCK_SIZE_V)
-#     num_pid_b = tl.cdiv(B, BLOCK_SIZE_B)
-#
-#     num_pid_in_group = GROUP_SIZE_V * num_pid_b
-#     group_id = pid // num_pid_in_group
-#     first_pid_v = group_id * GROUP_SIZE_V
-#     group_size_v = min(num_pid_v - first_pid_v, GROUP_SIZE_V)
-#     pid_v = first_pid_v + (pid % group_size_v)
-#     pid_b = (pid % num_pid_in_group) // group_size_v
-#     ###########################################################
-#
-#     offset_v = (pid_v * BLOCK_SIZE_V + tl.arange(0, BLOCK_SIZE_V)) % V
-#     offset_b = (pid_b * BLOCK_SIZE_B + tl.arange(0, BLOCK_SIZE_B)) % B
-#     offset_d = tl.arange(0, BLOCK_SIZE_D)
-#
-#     index_ptrs = index_ptr + (offset_b[:, None] * stride_index_dim_b + offset_v[None, :] * stride_index_dim_v)
-#
-#     pass
-#
-def gradient_x_kernel(index_ptr, grad_ptr, delta_ptr, x_ptr,
-                      stride_index_dim_b, stride_index_dim_v,
-                      stride_grad_dim_d, stride_grad_dim_v,
-                      stride_delta_dim_b, stride_delta_dim_v,
-                      stride_x_dim_b, stride_x_dim_l, stride_x_dim_d,
-                      B, V, D,
-                      BLOCK_SIZE_B: tl.constexpr,
-                      BLOCK_SIZE_V: tl.constexpr,
-                      BLOCK_SIZE_D: tl.constexpr,
-                      GROUP_SIZE_V: tl.constexpr):
+
+@triton.jit
+def gradient_x_kernel(index_ptr, grad_ptr, delta_ptr, w_ptr,
+                      D, N_INDEX,
+                      stride_index_dim0, stride_index_dim1,
+                      stride_grad_b, stride_grad_lmax, stride_grad_d,
+                      stride_delta_b, stride_delta_v,
+                      stride_w_d, stride_w_v,
+                      BLOCK_SIZE_D: tl.constexpr):
 
     pid = tl.program_id(axis=0)
 
-    start_block_b = pid * BLOCK_SIZE_B
+    start_point = pid * BLOCK_SIZE_D
 
-    offset_b = start_block_b + tl.arange(0, BLOCK_SIZE_B)
-    offset_v = tl.arange(0, V)
+    offsets = start_point + tl.arange(0, BLOCK_SIZE_D)
+
+    mask = offsets < D
+
+    for i in range(N_INDEX):
+        b = tl.load(index_ptr + (i * stride_index_dim0) + 0 * stride_index_dim1)
+        v = tl.load(index_ptr + (i * stride_index_dim0) + 1 * stride_index_dim1)
+        lmax = tl.load(index_ptr + (i * stride_index_dim0) + 2 * stride_index_dim1)
+
+        delta = tl.load(delta_ptr + (b[0] * stride_delta_b + v[0] * stride_delta_v))
+        w = tl.load(w_ptr + (offsets * stride_w_d + v[0] * stride_w_v), mask=mask)
+
+        grad = tl.load(grad_ptr + (b[0] * stride_grad_b + lmax[0] * stride_grad_lmax + offsets * stride_grad_d), mask=mask)
+
+        grad += delta * w
+
+        tl.store(grad_ptr + (b[0] * stride_grad_b + lmax[0] * stride_grad_lmax + offsets * stride_grad_d), grad, mask=mask)
 
 
 
+def compute_gradient_x(index, delta, w, grad_x):
+    N_INDEX = index.shape[0]
+    D = w.shape[0]
+
+    grid = lambda meta: (triton.cdiv(D, meta['BLOCK_SIZE_D']), )
+    gradient_x_kernel[grid](index, grad_x, delta, w,
+                            D, N_INDEX,
+                            index.stride(0), index.stride(1),
+                            grad_x.stride(0), grad_x.stride(1), grad_x.stride(2),
+                            delta.stride(0), delta.stride(1),
+                            w.stride(0), w.stride(1),
+                            BLOCK_SIZE_D=BLOCK_SIZE_D)
+
+    return grad_x.clone().detach().requires_grad_(True)
 
 
 class OptimReluMaxLinear(Function):
@@ -168,8 +149,21 @@ class OptimReluMaxLinear(Function):
         x, weight, bias, effective_indice = ctx.saved_tensors
         grad_x = grad_weight = grad_bias = None
 
+        effective_indice = torch.tensor(effective_indice, device='cuda')
+
+        if ctx.needs_input_grad[0]:
+            grad_x = compute_gradient_x(effective_indice, grad_outputs[0].clone(), weight, torch.zeros_like(x))
+
         if ctx.needs_input_grad[1]:
-            grad_weight = compute_gradient_w(effective_indice, grad_outputs[0], x)
+            grad_weight = compute_gradient_w(effective_indice, grad_outputs[0].clone(), x, torch.zeros_like(weight))
+
+        if ctx.needs_input_grad[2]:
+            index = torch.zeros_like(grad_outputs[0], device='cuda', dtype=torch.int64)
+            index[effective_indice[:, 0], effective_indice[:, 1]] = 1
+
+            grad_bias = torch.zeros((2, grad_outputs[0].shape[1]), device='cuda', dtype=grad_outputs[0].dtype).scatter_add_(dim=0, index=index, src=grad_outputs[0])[1, :]
 
         return grad_x, grad_weight, grad_bias, None
+
+
 

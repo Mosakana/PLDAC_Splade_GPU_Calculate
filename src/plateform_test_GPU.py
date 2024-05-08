@@ -4,11 +4,11 @@ from copy import deepcopy
 from torch.nn import ReLU
 
 
-batch = 32
-length = 10
-data_size = 64
+batch = 1000
+length = 200
+data_size = 300
 
-vocabulary = 20
+vocabulary = 1000
 
 list_lengths = torch.randint(0, length, [batch])
 
@@ -49,5 +49,3 @@ print(torch.all(grad_splade_w.isclose(w.grad)))
 print(torch.all(grad_splade_x.isclose(x.grad)))
 print(torch.all(grad_splade_b.isclose(b.grad)))
 
-print(b.grad)
-print(grad_splade_b)

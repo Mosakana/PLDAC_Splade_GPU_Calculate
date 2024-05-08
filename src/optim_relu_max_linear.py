@@ -1,14 +1,8 @@
 import torch
-import os
-
-os.environ["TRITON_INTERPRET"] = "1"
 from torch.autograd import Function
 from torch.nn import ReLU
 import triton
 import triton.language as tl
-from copy import deepcopy
-
-BLOCK_SIZE_D = 128
 
 
 @triton.jit
@@ -33,18 +27,25 @@ def gradient_w_kernel(index_ptr, grad_ptr, delta_ptr, x_ptr,
         v = tl.load(index_ptr + (i * stride_index_dim0) + 1 * stride_index_dim1)
         lmax = tl.load(index_ptr + (i * stride_index_dim0) + 2 * stride_index_dim1)
 
-        delta = tl.load(delta_ptr + (b[0] * stride_delta_b + v[0] * stride_delta_v))
-        x = tl.load(x_ptr + (b[0] * stride_x_b + lmax[0] * stride_x_l + offsets * stride_x_d), mask=mask)
-        grad = tl.load(grad_ptr + (offsets * stride_grad_d + v[0] * stride_grad_v), mask=mask)
+        delta = tl.load(delta_ptr + (b * stride_delta_b + v * stride_delta_v))
+        x = tl.load(x_ptr + (b * stride_x_b + lmax * stride_x_l + offsets * stride_x_d), mask=mask)
+        grad = tl.load(grad_ptr + (offsets * stride_grad_d + v * stride_grad_v), mask=mask)
 
         grad += delta * x
 
-        tl.store(grad_ptr + (offsets * stride_grad_d + v[0] * stride_grad_v), grad, mask=mask)
+        tl.store(grad_ptr + (offsets * stride_grad_d + v * stride_grad_v), grad, mask=mask)
 
 
 def compute_gradient_w(index, delta, x, grad_weight):
     N_INDEX = index.shape[0]
     D = x.shape[2]
+
+    BLOCK_SIZE_D = triton.next_power_of_2(D)
+    num_warps = 4
+    if BLOCK_SIZE_D >= 2048:
+        num_warps = 8
+    if BLOCK_SIZE_D >= 4096:
+        num_warps = 16
 
     grid = lambda meta: (triton.cdiv(D, meta['BLOCK_SIZE_D']), )
     gradient_w_kernel[grid](index, grad_weight, delta, x,
@@ -53,6 +54,7 @@ def compute_gradient_w(index, delta, x, grad_weight):
                             grad_weight.stride(0), grad_weight.stride(1),
                             delta.stride(0), delta.stride(1),
                             x.stride(0), x.stride(1), x.stride(2),
+                            num_warps=num_warps,
                             BLOCK_SIZE_D=BLOCK_SIZE_D)
 
     return grad_weight.clone().detach().requires_grad_(True)
@@ -80,20 +82,27 @@ def gradient_x_kernel(index_ptr, grad_ptr, delta_ptr, w_ptr,
         v = tl.load(index_ptr + (i * stride_index_dim0) + 1 * stride_index_dim1)
         lmax = tl.load(index_ptr + (i * stride_index_dim0) + 2 * stride_index_dim1)
 
-        delta = tl.load(delta_ptr + (b[0] * stride_delta_b + v[0] * stride_delta_v))
-        w = tl.load(w_ptr + (offsets * stride_w_d + v[0] * stride_w_v), mask=mask)
+        delta = tl.load(delta_ptr + (b * stride_delta_b + v * stride_delta_v))
+        w = tl.load(w_ptr + (offsets * stride_w_d + v * stride_w_v), mask=mask)
 
-        grad = tl.load(grad_ptr + (b[0] * stride_grad_b + lmax[0] * stride_grad_lmax + offsets * stride_grad_d), mask=mask)
+        grad = tl.load(grad_ptr + (b * stride_grad_b + lmax * stride_grad_lmax + offsets * stride_grad_d), mask=mask)
 
         grad += delta * w
 
-        tl.store(grad_ptr + (b[0] * stride_grad_b + lmax[0] * stride_grad_lmax + offsets * stride_grad_d), grad, mask=mask)
+        tl.store(grad_ptr + (b * stride_grad_b + lmax * stride_grad_lmax + offsets * stride_grad_d), grad, mask=mask)
 
 
 
 def compute_gradient_x(index, delta, w, grad_x):
     N_INDEX = index.shape[0]
     D = w.shape[0]
+
+    BLOCK_SIZE_D = triton.next_power_of_2(D)
+    num_warps = 4
+    if BLOCK_SIZE_D >= 2048:
+        num_warps = 8
+    if BLOCK_SIZE_D >= 4096:
+        num_warps = 16
 
     grid = lambda meta: (triton.cdiv(D, meta['BLOCK_SIZE_D']), )
     gradient_x_kernel[grid](index, grad_x, delta, w,
@@ -102,6 +111,7 @@ def compute_gradient_x(index, delta, w, grad_x):
                             grad_x.stride(0), grad_x.stride(1), grad_x.stride(2),
                             delta.stride(0), delta.stride(1),
                             w.stride(0), w.stride(1),
+                            num_warps=num_warps,
                             BLOCK_SIZE_D=BLOCK_SIZE_D)
 
     return grad_x.clone().detach().requires_grad_(True)
@@ -119,10 +129,10 @@ class OptimReluMaxLinear(Function):
 
         output = x @ weight
         if bias is not None:
-            output += bias.reshape(1, 1, bias.shape[0])
+            output = output + bias.reshape(1, 1, bias.shape[0])
 
         mask = torch.where(mask == 1, 0, -torch.inf)
-        output += mask.reshape(*mask.shape, 1)
+        output = output + mask.reshape(*mask.shape, 1)
 
         relu = ReLU()
         maximum, max_indice = torch.max(output, 1)
@@ -135,7 +145,7 @@ class OptimReluMaxLinear(Function):
         for b, v in zip(*indice_not_zero):
             effective_indice.append((b, v, max_indice[b, v]))
 
-        return result, torch.tensor(effective_indice)
+        return result, torch.tensor(effective_indice, device='cuda')
 
     @staticmethod
     def setup_context(ctx, inputs, outputs):
@@ -148,9 +158,6 @@ class OptimReluMaxLinear(Function):
     def backward(ctx, *grad_outputs):
         x, weight, bias, effective_indice = ctx.saved_tensors
         grad_x = grad_weight = grad_bias = None
-
-        effective_indice = torch.tensor(effective_indice, device='cuda')
-
         if ctx.needs_input_grad[0]:
             grad_x = compute_gradient_x(effective_indice, grad_outputs[0].clone(), weight, torch.zeros_like(x))
 

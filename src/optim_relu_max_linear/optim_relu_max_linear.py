@@ -57,6 +57,8 @@ def compute_gradient_w(index, delta, x, grad_weight):
                             num_warps=num_warps,
                             BLOCK_SIZE_D=BLOCK_SIZE_D)
 
+    torch.cuda.empty_cache()
+
     return grad_weight.clone().detach().requires_grad_(True)
 
 
@@ -113,6 +115,8 @@ def compute_gradient_x(index, delta, w, grad_x):
                             w.stride(0), w.stride(1),
                             num_warps=num_warps,
                             BLOCK_SIZE_D=BLOCK_SIZE_D)
+
+    torch.cuda.empty_cache()
 
     return grad_x.clone().detach().requires_grad_(True)
 

@@ -1,8 +1,7 @@
 import unittest
 from linear_model import LinearModel
 import torch
-import triton
-import triton.language as tl
+
 
 def mse(y_hat, y):
     return (torch.linalg.norm(y_hat - y)) / 2 / y.shape[0]

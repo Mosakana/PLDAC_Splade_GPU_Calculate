@@ -35,23 +35,10 @@ def gradient_w_kernel(index_ptr, index_mask_ptr, grad_ptr, delta_ptr, x_ptr,
 
             tl.store(grad_ptr + (d * stride_grad_d + v * stride_grad_v), grad, mask=(n < index_mask))
 
-def compute_gradient_w(index, delta, x, grad_weight):
+def compute_gradient_w(effective_indice, mask_effective_indice, delta, x, grad_weight):
     D, V = grad_weight.shape
 
-    unique_v = torch.unique(index[:, 1])
-
-    list_tensor_indice = [index[index[:, 1] == v] for v in unique_v]
-
-    mask_effective_indice = torch.tensor([len(t) for t in list_tensor_indice], device='cuda')
-
-    max_shape = max([t.shape for t in list_tensor_indice])
-
-    padded_tensors = [torch.nn.functional.pad(t, (0, max_shape[1] - t.shape[1], 0, max_shape[0] - t.shape[0])) for t in
-                      list_tensor_indice]
-
-    effective_indice = torch.stack(padded_tensors)
-
-    BLOCK_SIZE_V = 4096
+    BLOCK_SIZE_V = triton.next_power_of_2(V)
     num_warps = 4
     if BLOCK_SIZE_V >= 2048:
         num_warps = 8
@@ -160,25 +147,41 @@ class OptimReluMaxLinearV(Function):
         for b, v in zip(*indice_not_zero):
             list_triplet.append((b, v, max_indice[b, v]))
 
-        return result, torch.tensor(list_triplet, device='cuda')
+        tensor_triplet = torch.tensor(list_triplet, device='cuda')
+
+        unique_v = torch.unique(tensor_triplet[:, 1])
+
+        list_tensor_indice = [tensor_triplet[tensor_triplet[:, 1] == v] for v in unique_v]
+
+        mask_effective_indice = torch.tensor([len(t) for t in list_tensor_indice], device='cuda')
+
+        max_shape = max([t.shape for t in list_tensor_indice])
+
+        padded_tensors = [torch.nn.functional.pad(t, (0, max_shape[1] - t.shape[1], 0, max_shape[0] - t.shape[0]))
+                          for t in
+                          list_tensor_indice]
+
+        effective_indice = torch.stack(padded_tensors)
+
+        return result, tensor_triplet, effective_indice, mask_effective_indice
 
     @staticmethod
     def setup_context(ctx, inputs, outputs):
         x, weight, bias, _ = inputs
-        _, list_triplet = outputs
+        _, list_triplet, effective_indice, mask_effective_indice = outputs
 
-        ctx.save_for_backward(x, weight, bias, list_triplet)
+        ctx.save_for_backward(x, weight, bias, list_triplet, effective_indice, mask_effective_indice)
 
     @staticmethod
     def backward(ctx, *grad_outputs):
-        x, weight, bias, list_triplet = ctx.saved_tensors
+        x, weight, bias, list_triplet, effective_indice, mask_effective_indice = ctx.saved_tensors
         grad_x = grad_weight = grad_bias = None
 
         if ctx.needs_input_grad[0]:
             grad_x = compute_gradient_x(list_triplet, grad_outputs[0].clone(), weight, torch.zeros_like(x))
 
         if ctx.needs_input_grad[1]:
-            grad_weight = compute_gradient_w(list_triplet, grad_outputs[0].clone(), x, torch.zeros_like(weight))
+            grad_weight = compute_gradient_w(effective_indice, mask_effective_indice, grad_outputs[0].clone(), x, torch.zeros_like(weight))
 
         if ctx.needs_input_grad[2]:
             index = torch.zeros_like(grad_outputs[0], device='cuda', dtype=torch.int64)

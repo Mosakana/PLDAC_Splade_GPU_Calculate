@@ -4,7 +4,6 @@ from torch.nn import ReLU
 import triton
 import triton.language as tl
 
-
 @triton.jit
 def gradient_w_kernel(index_ptr, grad_ptr, delta_ptr, x_ptr,
                       D, N_INDEX,
@@ -40,12 +39,8 @@ def compute_gradient_w(index, delta, x, grad_weight):
     N_INDEX = index.shape[0]
     D = x.shape[2]
 
-    BLOCK_SIZE_D = triton.next_power_of_2(D)
+    BLOCK_SIZE_D = 8
     num_warps = 4
-    if BLOCK_SIZE_D >= 2048:
-        num_warps = 8
-    if BLOCK_SIZE_D >= 4096:
-        num_warps = 16
 
     grid = lambda meta: (triton.cdiv(D, meta['BLOCK_SIZE_D']), )
     gradient_w_kernel[grid](index, grad_weight, delta, x,
@@ -56,8 +51,6 @@ def compute_gradient_w(index, delta, x, grad_weight):
                             x.stride(0), x.stride(1), x.stride(2),
                             num_warps=num_warps,
                             BLOCK_SIZE_D=BLOCK_SIZE_D)
-
-    torch.cuda.empty_cache()
 
     return grad_weight.clone().detach().requires_grad_(True)
 
@@ -99,12 +92,8 @@ def compute_gradient_x(index, delta, w, grad_x):
     N_INDEX = index.shape[0]
     D = w.shape[0]
 
-    BLOCK_SIZE_D = triton.next_power_of_2(D)
+    BLOCK_SIZE_D = 8
     num_warps = 4
-    if BLOCK_SIZE_D >= 2048:
-        num_warps = 8
-    if BLOCK_SIZE_D >= 4096:
-        num_warps = 16
 
     grid = lambda meta: (triton.cdiv(D, meta['BLOCK_SIZE_D']), )
     gradient_x_kernel[grid](index, grad_x, delta, w,
@@ -115,8 +104,6 @@ def compute_gradient_x(index, delta, w, grad_x):
                             w.stride(0), w.stride(1),
                             num_warps=num_warps,
                             BLOCK_SIZE_D=BLOCK_SIZE_D)
-
-    torch.cuda.empty_cache()
 
     return grad_x.clone().detach().requires_grad_(True)
 

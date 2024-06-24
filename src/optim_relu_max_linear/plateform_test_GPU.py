@@ -4,8 +4,8 @@ from copy import deepcopy
 from torch.nn import ReLU
 
 
-batch = 1000
-length = 200
+batch = 32
+length = 100
 data_size = 300
 
 vocabulary = 1000

@@ -129,23 +129,15 @@ class OptimReluMaxLinear(Function):
         maximum, max_indice = torch.max(output, 1)
         result = relu(maximum)
 
-        indice_not_zero = torch.nonzero(result, as_tuple=True)
+        indice_not_zero = torch.nonzero(result, as_tuple=False)
 
-        effective_indice = []
+        lmax = max_indice[indice_not_zero[:, 0], indice_not_zero[:, 1]]
 
-        for b, v in zip(*indice_not_zero):
-            effective_indice.append((b, v, max_indice[b, v]))
+        effective_indice = torch.cat((indice_not_zero, lmax.reshape(*lmax.shape, 1)), 1).cuda()
 
-        ctx.save_for_backward(x, weight, bias, torch.tensor(effective_indice, device='cuda'))
+        ctx.save_for_backward(x, weight, bias, effective_indice)
 
         return result
-
-    # @staticmethod
-    # def setup_context(ctx, inputs, outputs):
-    #     x, weight, bias, _ = inputs
-    #     _, effective_indice = outputs
-    #
-    #     ctx.save_for_backward(x, weight, bias, effective_indice)
 
     @staticmethod
     def backward(ctx, *grad_outputs):

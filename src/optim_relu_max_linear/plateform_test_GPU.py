@@ -4,7 +4,7 @@ from copy import deepcopy
 from torch.nn import ReLU
 
 
-batch = 32
+batch = 16
 length = 100
 data_size = 300
 
@@ -23,7 +23,7 @@ for i, l in enumerate(list_lengths):
 
 splade = OptimReluMaxLinear.apply(x, w, b, mask)
 
-splade[0].sum().backward()
+splade.sum().backward()
 
 grad_splade_w = deepcopy(w.grad)
 grad_splade_x = deepcopy(x.grad)

@@ -38,7 +38,7 @@ def gradient_w_kernel(index_ptr, index_mask_ptr, grad_ptr, delta_ptr, x_ptr,
 def compute_gradient_w(effective_indice, mask_effective_indice, delta, x, grad_weight):
     D, V = grad_weight.shape
 
-    BLOCK_SIZE_V = triton.next_power_of_2(V)
+    BLOCK_SIZE_V = 16
     num_warps = 4
     if BLOCK_SIZE_V >= 2048:
         num_warps = 8
@@ -97,7 +97,7 @@ def compute_gradient_x(index, delta, w, grad_x):
     N_INDEX = index.shape[0]
     D = w.shape[0]
 
-    BLOCK_SIZE_D = triton.next_power_of_2(D)
+    BLOCK_SIZE_D = 16
     num_warps = 4
     if BLOCK_SIZE_D >= 2048:
         num_warps = 8
@@ -121,7 +121,7 @@ def compute_gradient_x(index, delta, w, grad_x):
 
 class OptimReluMaxLinearV(Function):
     @staticmethod
-    def forward(x, weight, bias, mask):
+    def forward(ctx, x, weight, bias, mask):
         '''
         :param x: Matrix with shape (B, L, D) (Batch, sequence, embedding)
         :param weight: Matrix with shape (D, V) (embedding, vocabulary)
@@ -163,14 +163,16 @@ class OptimReluMaxLinearV(Function):
 
         effective_indice = torch.stack(padded_tensors)
 
-        return result, tensor_triplet, effective_indice, mask_effective_indice
+        ctx.save_for_backward(x, weight, bias, tensor_triplet, effective_indice, mask_effective_indice)
 
-    @staticmethod
-    def setup_context(ctx, inputs, outputs):
-        x, weight, bias, _ = inputs
-        _, list_triplet, effective_indice, mask_effective_indice = outputs
+        return result
 
-        ctx.save_for_backward(x, weight, bias, list_triplet, effective_indice, mask_effective_indice)
+    # @staticmethod
+    # def setup_context(ctx, inputs, outputs):
+    #     x, weight, bias, _ = inputs
+    #     _, list_triplet, effective_indice, mask_effective_indice = outputs
+    #
+    #     ctx.save_for_backward(x, weight, bias, list_triplet, effective_indice, mask_effective_indice)
 
     @staticmethod
     def backward(ctx, *grad_outputs):
